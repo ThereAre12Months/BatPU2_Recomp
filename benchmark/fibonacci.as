@@ -1,4 +1,4 @@
-; calculates the least significant 8 bits of the 4294967296th fibonacci number
+; calculates the least significant 8 bits of the 2^32th fibonacci number
 
 ldi r1 0
 ldi r2 1
