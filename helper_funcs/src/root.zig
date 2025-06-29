@@ -16,6 +16,15 @@ var signedness: bool = false;
 
 var writer: std.fs.File.Writer = undefined;
 
+pub export fn init_headless() void {
+    writer = std.io.getStdOut().writer();
+}
+
+pub export fn deinit_headless() void {
+    write_num();
+    std.process.exit(0);
+}
+
 pub export fn init() void {
     rl.initWindow(32 * SCALE, 32 * SCALE, "BatPU2 Recomp");
     if (TARGET_FPS > 0) {
@@ -40,6 +49,8 @@ pub export fn deinit() void {
 
     rl.endDrawing();
     rl.closeWindow();
+
+    write_num();
 
     std.process.exit(0);
 }
@@ -123,9 +134,9 @@ pub export fn set_signedness(signed: bool) void {
 
 pub export fn write_num() void {
     if (signedness) {
-        writer.print("{d}\n", .{@as(i16, num & 0b01111111) * -@as(i16, num >> 7)}) catch return;
+        writer.print("{}\n", .{@as(i16, num & 0b01111111) * -@as(i16, num >> 7)}) catch return;
     } else {
-        writer.print("{u}\n", .{@as(u8, num)}) catch return;
+        writer.print("{}\n", .{@as(u8, num)}) catch return;
     }
 }
 

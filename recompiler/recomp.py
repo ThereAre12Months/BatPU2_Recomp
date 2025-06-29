@@ -42,6 +42,16 @@ def declare_external_functions(mod:ir.Module) -> dict:
     """
 
     mapping = {
+        "init_headless": ir.Function(
+            module = mod,
+            ftype  = ir.FunctionType(ir.VoidType(), []),
+            name   = "init_headless",
+        ),
+        "deinit_headless": ir.Function(
+            module = mod,
+            ftype  = ir.FunctionType(ir.VoidType(), []),
+            name   = "deinit_headless",
+        ),
         "init": ir.Function(
             module = mod,
             ftype  = ir.FunctionType(ir.VoidType(), []),
@@ -120,7 +130,7 @@ def declare_external_functions(mod:ir.Module) -> dict:
     }
     return mapping
 
-def generate_ir(mod:ir.Module, funcs:dict, mc:bytes) -> str:
+def generate_ir(mod:ir.Module, funcs:dict, mc:bytes, headless:bool=False) -> str:
     """
     Generates LLVM IR from the given machine code.
     """
@@ -171,11 +181,17 @@ def generate_ir(mod:ir.Module, funcs:dict, mc:bytes) -> str:
             builder.append_basic_block(name=f"block_{i:04x}")
         )
 
-    builder.call(funcs["init"], [])
+    if headless:
+        builder.call(funcs["init_headless"], [])
+    else:
+        builder.call(funcs["init"], [])
 
     exit_block = builder.append_basic_block(name="exit")
     builder.position_at_start(exit_block)
-    builder.call(funcs["deinit"], [])
+    if headless:
+        builder.call(funcs["deinit_headless"], [])
+    else:
+        builder.call(funcs["deinit"], [])
     builder.ret(ir.Constant(ir.IntType(32), 0))
 
 
@@ -537,17 +553,23 @@ def generate_ir(mod:ir.Module, funcs:dict, mc:bytes) -> str:
                 )
 
                 builder.position_at_start(case_244)
-                val = builder.call(
-                    funcs["get_pixel"],
-                    [
-                        builder.load(pixel_x),
-                        builder.load(pixel_y),
-                    ]
-                )
-                builder.store(
-                    val,
-                    regs[reg_b],
-                )
+                if headless:
+                    builder.store(
+                        ir.Constant(ir.IntType(8), 0),
+                        regs[reg_b],
+                    )
+                else:
+                    val = builder.call(
+                        funcs["get_pixel"],
+                        [
+                            builder.load(pixel_x),
+                            builder.load(pixel_y),
+                        ]
+                    )
+                    builder.store(
+                        val,
+                        regs[reg_b],
+                    )
                 builder.branch(blocks[i // 2 + 1])
 
                 builder.position_at_start(case_254)
@@ -562,14 +584,20 @@ def generate_ir(mod:ir.Module, funcs:dict, mc:bytes) -> str:
                 builder.branch(blocks[i // 2 + 1])
 
                 builder.position_at_start(case_255)
-                val = builder.call(
-                    funcs["get_controller"],
-                    []
-                )
-                builder.store(
-                    val,
-                    regs[reg_b],
-                )
+                if headless:
+                    builder.store(
+                        ir.Constant(ir.IntType(8), 0),
+                        regs[reg_b],
+                    )
+                else:
+                    val = builder.call(
+                        funcs["get_controller"],
+                        []
+                    )
+                    builder.store(
+                        val,
+                        regs[reg_b],
+                    )
                 builder.branch(blocks[i // 2 + 1])
 
                 builder.position_at_end(blocks[i // 2])
@@ -689,34 +717,38 @@ def generate_ir(mod:ir.Module, funcs:dict, mc:bytes) -> str:
                 )
                 builder.branch(blocks[i // 2 + 1])
                 builder.position_at_start(case_242)
-                builder.call(
-                    funcs["draw_pixel"],
-                    [
-                        builder.load(pixel_x),
-                        builder.load(pixel_y),
-                    ]
-                )
+                if not headless:
+                    builder.call(
+                        funcs["draw_pixel"],
+                        [
+                            builder.load(pixel_x),
+                            builder.load(pixel_y),
+                        ]
+                    )
                 builder.branch(blocks[i // 2 + 1])
                 builder.position_at_start(case_243)
-                builder.call(
-                    funcs["clear_pixel"],
-                    [
-                        builder.load(pixel_x),
-                        builder.load(pixel_y),
-                    ]
-                )
+                if not headless:
+                    builder.call(
+                        funcs["clear_pixel"],
+                        [
+                            builder.load(pixel_x),
+                            builder.load(pixel_y),
+                        ]
+                    )
                 builder.branch(blocks[i // 2 + 1])
                 builder.position_at_start(case_245)
-                builder.call(
-                    funcs["update_screen"],
-                    []
-                )
+                if not headless:
+                    builder.call(
+                        funcs["update_screen"],
+                        []
+                    )
                 builder.branch(blocks[i // 2 + 1])
                 builder.position_at_start(case_246)
-                builder.call(
-                    funcs["clear_screen"],
-                    []
-                )
+                if not headless:
+                    builder.call(
+                        funcs["clear_screen"],
+                        []
+                    )
                 builder.branch(blocks[i // 2 + 1])
                 builder.position_at_start(case_247)
                 builder.call(
@@ -778,7 +810,7 @@ def generate_ir(mod:ir.Module, funcs:dict, mc:bytes) -> str:
 
     return str(mod)
 
-def recomp(in_file:str, out_file:str):
+def recomp(in_file:str, out_file:str, headless:bool = False) -> None:
     """
     Compiles 'in_file' to LLVM IR and writes it to 'out_file'.
     """
@@ -789,10 +821,9 @@ def recomp(in_file:str, out_file:str):
 
     mc = load_mc_file(in_file)
 
-    llvm = generate_ir(mod, funcs, mc)
+    llvm = generate_ir(mod, funcs, mc, headless=headless)
     
     with open(out_file, "w") as file:
-        
         file.write(llvm)
 
 if __name__ == "__main__":
@@ -802,6 +833,7 @@ if __name__ == "__main__":
     parser.add_argument("in_file", type=str, help="Path to the input .mc file.")
     parser.add_argument("out_file", type=str, help="Path to the output LLVM IR file.")
 
+    parser.add_argument("--headless", action="store_true", help="Run in headless mode without initializing the graphics library.")
     args = parser.parse_args()
-
-    recomp(args.in_file, args.out_file)
+    
+    recomp(args.in_file, args.out_file, headless=args.headless)
