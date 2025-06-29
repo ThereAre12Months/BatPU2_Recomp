@@ -276,13 +276,13 @@ def generate_ir(mod:ir.Module, funcs:dict, mc:bytes, headless:bool=False) -> str
                     builder.icmp_unsigned(
                         "==",
                         res,
-                        ir.Constant(ir.IntType(8), 0)
+                        ir.Constant(ir.IntType(8), 0),
                     ),
                     flag_Z
                 )
                 builder.store(
                     builder.icmp_unsigned(
-                        ">",
+                        "<=",
                         res,
                         r_a_val,
                     ),
