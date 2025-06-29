@@ -11,6 +11,9 @@ var char_buffer: [32]u8 = .{0} ** 32;
 var char_buffer_index: usize = 0;
 var char_mapping: [256]u8 = undefined;
 
+var num: u8 = 0;
+var signedness: bool = false;
+
 var writer: std.fs.File.Writer = undefined;
 
 pub export fn init() void {
@@ -107,6 +110,22 @@ pub export fn flush_char_buffer() void {
     if (char_buffer_index > 0) {
         writer.print("{s}\n", .{char_buffer[0..char_buffer.len]}) catch return;
         clear_char_buffer();
+    }
+}
+
+pub export fn set_num(n: u8) void {
+    num = n;
+}
+
+pub export fn set_signedness(signed: bool) void {
+    signedness = signed;
+}
+
+pub export fn write_num() void {
+    if (signedness) {
+        writer.print("{d}\n", .{@as(i8, num)}) catch return;
+    } else {
+        writer.print("{u}\n", .{@as(u8, num)}) catch return;
     }
 }
 
