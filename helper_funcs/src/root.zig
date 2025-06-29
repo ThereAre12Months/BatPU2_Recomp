@@ -29,6 +29,8 @@ pub export fn deinit() void {
 
     rl.endDrawing();
     rl.closeWindow();
+
+    std.process.exit(0);
 }
 
 pub export fn draw_pixel(x: u8, y: u8) void {
