@@ -92,6 +92,21 @@ def declare_external_functions(mod:ir.Module) -> dict:
             ftype  = ir.FunctionType(ir.VoidType(), []),
             name   = "flush_char_buffer",
         ),
+        "set_num": ir.Function(
+            module = mod,
+            ftype  = ir.FunctionType(ir.VoidType(), [ir.IntType(8)]),
+            name   = "set_num",
+        ),
+        "set_signedness": ir.Function(
+            module = mod,
+            ftype  = ir.FunctionType(ir.VoidType(), [ir.IntType(1)]),
+            name   = "set_signedness",
+        ),
+        "write_num": ir.Function(
+            module = mod,
+            ftype  = ir.FunctionType(ir.VoidType(), []),
+            name   = "write_num",
+        ),
         "get_controller": ir.Function(
             module = mod,
             ftype  = ir.FunctionType(ir.IntType(8), []),
@@ -640,6 +655,26 @@ def generate_ir(mod:ir.Module, funcs:dict, mc:bytes) -> str:
                     ir.Constant(ir.IntType(8), 249),
                     case_249,
                 )
+                case_250 = builder.append_basic_block()
+                switch.add_case(
+                    ir.Constant(ir.IntType(8), 250),
+                    case_250,
+                )
+                case_251 = builder.append_basic_block()
+                switch.add_case(
+                    ir.Constant(ir.IntType(8), 251),
+                    case_251,
+                )
+                case_252 = builder.append_basic_block()
+                switch.add_case(
+                    ir.Constant(ir.IntType(8), 252),
+                    case_252,
+                )
+                case_253 = builder.append_basic_block()
+                switch.add_case(
+                    ir.Constant(ir.IntType(8), 253),
+                    case_253,
+                )
 
                 builder.position_at_start(case_240)
                 builder.store(
@@ -699,6 +734,30 @@ def generate_ir(mod:ir.Module, funcs:dict, mc:bytes) -> str:
                 builder.call(
                     funcs["clear_char_buffer"],
                     []
+                )
+                builder.branch(blocks[i // 2 + 1])
+                builder.position_at_start(case_250)
+                builder.call(
+                    funcs["set_num"],
+                    [builder.load(regs[reg_b])]
+                )
+                builder.branch(blocks[i // 2 + 1])
+                builder.position_at_start(case_251)
+                builder.call(
+                    funcs["set_num"],
+                    [ir.Constant(ir.IntType(8), 0)]
+                )
+                builder.branch(blocks[i // 2 + 1])
+                builder.position_at_start(case_252)
+                builder.call(
+                    funcs["set_signedness"],
+                    [ir.Constant(ir.IntType(1), 0)]
+                )
+                builder.branch(blocks[i // 2 + 1])
+                builder.position_at_start(case_253)
+                builder.call(
+                    funcs["set_signedness"],
+                    [ir.Constant(ir.IntType(1), 1)]
                 )
                 builder.branch(blocks[i // 2 + 1])
 

@@ -123,7 +123,7 @@ pub export fn set_signedness(signed: bool) void {
 
 pub export fn write_num() void {
     if (signedness) {
-        writer.print("{d}\n", .{@as(i8, num)}) catch return;
+        writer.print("{d}\n", .{@as(i16, num & 0b01111111) * -@as(i16, num >> 7)}) catch return;
     } else {
         writer.print("{u}\n", .{@as(u8, num)}) catch return;
     }
