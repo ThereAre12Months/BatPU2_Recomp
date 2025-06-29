@@ -245,24 +245,30 @@ def generate_ir(mod:ir.Module, funcs:dict, mc:bytes) -> str:
 
             # NOR
             case 0x4:
-                if reg_c == 0:
-                    continue
-
-                builder.store(
-                    builder.not_(
+                res = builder.not_(
                         builder.or_(
                             builder.load(regs[reg_a]),
                             builder.load(regs[reg_b])
                         )
+                    )
+                
+                if reg_c != 0:
+                    builder.store(
+                        res,
+                        regs[reg_c]
+                    )
+
+                builder.store(
+                    builder.icmp_unsigned(
+                        "==",
+                        res,
+                        ir.Constant(ir.IntType(8), 0)
                     ),
-                    regs[reg_c]
+                    flag_Z
                 )
 
             # AND
             case 0x5:
-                #if reg_c == 0:
-                #    continue
-
                 res = builder.and_(
                     builder.load(regs[reg_a]),
                     builder.load(regs[reg_b]),
@@ -284,15 +290,24 @@ def generate_ir(mod:ir.Module, funcs:dict, mc:bytes) -> str:
 
             # XOR
             case 0x6:
-                if reg_c == 0:
-                    continue
-
-                builder.store(
-                    builder.xor(
+                res = builder.xor(
                         builder.load(regs[reg_a]),
                         builder.load(regs[reg_b])
+                    )
+                
+                if reg_c != 0:
+                    builder.store(
+                        res,
+                        regs[reg_c]
+                    )
+
+                builder.store(
+                    builder.icmp_unsigned(
+                        "==",
+                        res,
+                        ir.Constant(ir.IntType(8), 0)
                     ),
-                    regs[reg_c]
+                    flag_Z
                 )
 
             # RSH
@@ -307,6 +322,15 @@ def generate_ir(mod:ir.Module, funcs:dict, mc:bytes) -> str:
                         res,
                         regs[reg_c]
                     )
+
+                builder.store(
+                    builder.icmp_unsigned(
+                        "==",
+                        res,
+                        ir.Constant(ir.IntType(8), 0)
+                    ),
+                    flag_Z
+                )
 
             # LDI
             case 0x8:
