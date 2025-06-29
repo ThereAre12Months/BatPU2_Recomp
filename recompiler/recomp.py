@@ -77,6 +77,21 @@ def declare_external_functions(mod:ir.Module) -> dict:
             ftype  = ir.FunctionType(ir.VoidType(), []),
             name   = "clear_screen",
         ),
+        "push_char": ir.Function(
+            module = mod,
+            ftype  = ir.FunctionType(ir.VoidType(), [ir.IntType(8)]),
+            name   = "push_char",
+        ),
+        "clear_char_buffer": ir.Function(
+            module = mod,
+            ftype  = ir.FunctionType(ir.VoidType(), []),
+            name   = "clear_char_buffer",
+        ),
+        "flush_char_buffer": ir.Function(
+            module = mod,
+            ftype  = ir.FunctionType(ir.VoidType(), []),
+            name   = "flush_char_buffer",
+        ),
         "get_controller": ir.Function(
             module = mod,
             ftype  = ir.FunctionType(ir.IntType(8), []),
@@ -610,6 +625,21 @@ def generate_ir(mod:ir.Module, funcs:dict, mc:bytes) -> str:
                     ir.Constant(ir.IntType(8), 246),
                     case_246,
                 )
+                case_247 = builder.append_basic_block()
+                switch.add_case(
+                    ir.Constant(ir.IntType(8), 247),
+                    case_247,
+                )
+                case_248 = builder.append_basic_block()
+                switch.add_case(
+                    ir.Constant(ir.IntType(8), 248),
+                    case_248,
+                )
+                case_249 = builder.append_basic_block()
+                switch.add_case(
+                    ir.Constant(ir.IntType(8), 249),
+                    case_249,
+                )
 
                 builder.position_at_start(case_240)
                 builder.store(
@@ -650,6 +680,24 @@ def generate_ir(mod:ir.Module, funcs:dict, mc:bytes) -> str:
                 builder.position_at_start(case_246)
                 builder.call(
                     funcs["clear_screen"],
+                    []
+                )
+                builder.branch(blocks[i // 2 + 1])
+                builder.position_at_start(case_247)
+                builder.call(
+                    funcs["push_char"],
+                    [builder.load(regs[reg_b])]
+                )
+                builder.branch(blocks[i // 2 + 1])
+                builder.position_at_start(case_248)
+                builder.call(
+                    funcs["flush_char_buffer"],
+                    []
+                )
+                builder.branch(blocks[i // 2 + 1])
+                builder.position_at_start(case_249)
+                builder.call(
+                    funcs["clear_char_buffer"],
                     []
                 )
                 builder.branch(blocks[i // 2 + 1])

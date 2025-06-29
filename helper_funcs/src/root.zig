@@ -11,13 +11,15 @@ var char_buffer: [32]u8 = .{0} ** 32;
 var char_buffer_index: usize = 0;
 var char_mapping: [256]u8 = undefined;
 
-const print = std.io.getStdOut().writer().print;
+var writer: std.fs.File.Writer = undefined;
 
 pub export fn init() void {
     rl.initWindow(32 * SCALE, 32 * SCALE, "BatPU2 Recomp");
     if (TARGET_FPS > 0) {
         rl.setTargetFPS(TARGET_FPS);
     }
+
+    writer = std.io.getStdOut().writer();
 
     // init screen buffer
     screen = rl.genImageColor(32, 32, rl.Color.black);
@@ -103,7 +105,7 @@ pub export fn clear_char_buffer() void {
 
 pub export fn flush_char_buffer() void {
     if (char_buffer_index > 0) {
-        print("{s}\n", .{char_buffer[0..char_buffer.len]}) catch return;
+        writer.print("{s}\n", .{char_buffer[0..char_buffer.len]}) catch return;
         clear_char_buffer();
     }
 }
