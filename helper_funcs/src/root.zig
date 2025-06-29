@@ -7,6 +7,12 @@ const TARGET_FPS = -1;
 var screen: rl.Image = undefined;
 var texture: rl.Texture2D = undefined;
 
+var char_buffer: [32]u8 = .{0} ** 32;
+var char_buffer_index: usize = 0;
+var char_mapping: [256]u8 = undefined;
+
+const print = std.io.getStdOut().writer().print;
+
 pub export fn init() void {
     rl.initWindow(32 * SCALE, 32 * SCALE, "BatPU2 Recomp");
     if (TARGET_FPS > 0) {
@@ -59,6 +65,46 @@ pub export fn update_screen() void {
     if (rl.windowShouldClose()) {
         deinit();
         std.process.exit(0);
+    }
+}
+
+fn map_char(c: u8) u8 {
+    if (c == 0) {
+        return ' ';
+    }
+    if (c < 27) {
+        return @intCast('A' + c - 1);
+    }
+    if (c == 27) {
+        return '.';
+    }
+    if (c == 28) {
+        return '!';
+    }
+    if (c == 29) {
+        return '?';
+    }
+
+    // '-' is used for undefined characters
+    return '-';
+}
+
+pub export fn push_char(c: u8) void {
+    if (char_buffer_index < char_buffer.len) {
+        char_buffer[char_buffer_index] = map_char(c);
+        char_buffer_index += 1;
+    }
+}
+
+pub export fn clear_char_buffer() void {
+    char_buffer = .{0} ** 32;
+    char_buffer_index = 0;
+}
+
+pub export fn flush_char_buffer() void {
+    if (char_buffer_index > 0) {
+        print("{s}\n", .{char_buffer[0..char_buffer.len]}) catch return;
+        clear_char_buffer();
     }
 }
 
