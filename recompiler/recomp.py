@@ -87,21 +87,6 @@ def declare_external_functions(mod:ir.Module) -> dict:
             ftype  = ir.FunctionType(ir.IntType(8), []),
             name   = "get_random_num",
         ),
-        "write": ir.Function(
-            module = mod,
-            ftype  = ir.FunctionType(ir.VoidType(), [ir.PointerType()]),
-            name   = "write",
-        ),
-        "printnum": ir.Function(
-            module = mod,
-            ftype  = ir.FunctionType(ir.VoidType(), [ir.IntType(8)]),
-            name   = "printnum",
-        ),
-        "printbool": ir.Function(
-            module = mod,
-            ftype  = ir.FunctionType(ir.VoidType(), [ir.IntType(1)]),
-            name   = "printbool",
-        ),
     }
     return mapping
 
