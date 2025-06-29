@@ -170,59 +170,6 @@ def generate_ir(mod:ir.Module, funcs:dict, mc:bytes) -> str:
         addr = full & 0x03FF
 
         cond = (full & 0x0C00) >> 10
-        log_to_file = False
-        if log_to_file:
-            for reg in regs:
-                builder.call(
-                    funcs["printnum"],
-                    [
-                        builder.load(reg)
-                    ]
-                )
-
-            builder.call(
-                funcs["printbool"],
-                [
-                    builder.load(flag_Z)
-                ]
-            )
-            builder.call(
-                funcs["printbool"],
-                [
-                    builder.load(flag_C)
-                ]
-            )
-            end_str = "\n\0".encode("ascii")
-            end_str_ptr = builder.alloca(ir.ArrayType(ir.IntType(8), len(end_str)))
-            builder.store(
-                ir.Constant(
-                    ir.ArrayType(ir.IntType(8), 2),
-                    [
-                        ir.Constant(ir.IntType(8), b) for b in end_str
-                    ],
-                ),
-                end_str_ptr,
-            )
-            builder.call(
-                funcs["write"],
-                [end_str_ptr]
-            )
-
-            pretty = f"PC:{i//2:04x} OP:{opcode:01x} A:{reg_a} B:{reg_b} C:{reg_b} off:{offset} imm:{imm} addr:{addr}\n\0".encode("ascii")
-            pretty_alloc = builder.alloca(ir.ArrayType(ir.IntType(8), len(pretty)))
-            builder.store(
-                ir.Constant(
-                    ir.ArrayType(ir.IntType(8), len(pretty)),
-                    [ir.Constant(ir.IntType(8), b) for b in pretty]
-                ),
-                pretty_alloc
-            )
-            builder.call(
-                funcs["write"],
-                [
-                    pretty_alloc
-                ]
-            )
 
         match opcode:
             # NOP
