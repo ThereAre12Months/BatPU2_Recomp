@@ -246,6 +246,7 @@ class Recompiler:
         for instr in self.instructions:
             if instr.op == Instruction.JMP:
                 self.branch_targets.append(instr.addr)
+                self.branch_targets.append(instr.pc + 1)
 
             elif instr.op == Instruction.BRH:
                 self.branch_targets.append(instr.addr)
@@ -254,6 +255,10 @@ class Recompiler:
             elif instr.op == Instruction.CAL:
                 self.branch_targets.append(instr.addr)
                 self.return_targets.append(instr.pc + 1)
+
+            elif instr.op == Instruction.RET:
+                # RET produces a block terminator, so a new block after it must be created
+                self.branch_targets.append(instr.pc + 1)
 
             elif instr.op == Instruction.LOD:
                 self.branch_targets.append(instr.pc + 1)
