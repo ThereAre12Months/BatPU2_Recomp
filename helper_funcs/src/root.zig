@@ -44,6 +44,7 @@ pub export fn init() void {
 }
 
 pub export fn deinit() void {
+    writer.print("DEINITIALIZING\n", .{}) catch return;
     screen.unload();
     texture.unload();
 
@@ -53,6 +54,11 @@ pub export fn deinit() void {
     write_num();
 
     std.process.exit(0);
+}
+
+pub export fn raise_error() void {
+    writer.print("CRITICAL ERROR\n", .{}) catch return;
+    deinit_headless();
 }
 
 pub export fn draw_pixel(x: u8, y: u8) void {

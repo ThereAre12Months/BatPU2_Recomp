@@ -1,830 +1,909 @@
 from llvmlite import ir, binding
 import os
 
-def load_mc_file(path:str) -> bytes: 
-    """
-    Load a machine code file from the given path and returns its content as bytes.
-    """
+class Instruction:
+    NOP = 0x0
+    HLT = 0x1
+    ADD = 0x2
+    SUB = 0x3
+    NOR = 0x4
+    AND = 0x5
+    XOR = 0x6
+    RSH = 0x7
+    LDI = 0x8
+    ADI = 0x9
+    JMP = 0xa
+    BRH = 0xb
+    CAL = 0xc
+    RET = 0xd
+    LOD = 0xe
+    STR = 0xf
 
-    with open(path, "r") as file:
-        lines = file.read().splitlines()
+    def __init__(self, pc, op, reg_a, reg_b, reg_c, off, imm, addr, cond) -> None:
+        self.pc = pc
+        self.op = op
 
-    # Convert weird binary strings to bytes
-    b = []
-    for line in lines:
-        b.extend(
-            [int(line[:8], base=2), int(line[8:16], base=2)]
-        )
+        self.reg_a = reg_a
+        self.reg_b = reg_b
+        self.reg_c = reg_c
 
-    return bytes(b)
+        self.off  = off
+        self.imm  = imm
+        self.addr = addr
 
-def init():
-    """
-    Initializes the LLVM bindings.
-    """
+        self.cond = cond
 
-    binding.initialize()
-    binding.initialize_native_target()
-    binding.initialize_native_asmprinter()
+class Recompiler:
+    def __init__(self, in_file:str, out_file:str, headless:bool=False) -> None:
+        self.in_file  = in_file
+        self.out_file = out_file
+        self.headless = headless
 
-def make_module(name:str):
-    """
-    Creates a new LLVM module with the given name.
-    """
+        self.name = os.path.splitext(os.path.basename(self.in_file))[0]
+        self.load_mc_file()
 
-    mod = ir.Module(name=name)
-    mod.triple = binding.get_default_triple()
-    return mod
+        self.init_llvm_binding()
+        self.init_llvm_module()
+        self.declare_helper_funcs()
 
-def declare_external_functions(mod:ir.Module) -> dict:
-    """
-    Creates a mapping between function names and their LLVM declarations.
-    """
+    def recompile(self) -> None:
+        self.init_llvm_builder()
 
-    mapping = {
+        self.find_branch_targets()
+        self.build_llvm_blocks()
+
+        self.builder.position_at_end(self.exit_block)
+        self.build_exit_routine()
+
+        self.builder.position_at_end(self.error_block)
+        self.build_error_routine()
+
+        self.builder.position_at_end(self.entry)
+
+        self.allocate_data()
+        self.init_runtime()
+
+        self.builder.branch(self.blocks[0])
+
+        for instr in self.instructions:
+            self.translate_instruction(instr)
+
+        self.terminate_all_blocks()
+
+        self.write_llvm_file()
+
+    def translate_instruction(self, instr:Instruction):
+        self.position_at_end_of_closest_block(instr.pc)
+
+        match instr.op:
+            case Instruction.NOP:
+                ...
+            case Instruction.HLT:
+                self.instr_hlt()
+            case Instruction.ADD:
+                self.instr_add(instr.reg_a, instr.reg_b, instr.reg_c)
+            case Instruction.SUB:
+                self.instr_sub(instr.reg_a, instr.reg_b, instr.reg_c)
+            case Instruction.NOR:
+                self.instr_nor(instr.reg_a, instr.reg_b, instr.reg_c)
+            case Instruction.AND:
+                self.instr_and(instr.reg_a, instr.reg_b, instr.reg_c)
+            case Instruction.XOR:
+                self.instr_xor(instr.reg_a, instr.reg_b, instr.reg_c)
+            case Instruction.RSH:
+                self.instr_rsh(instr.reg_a, instr.reg_c)
+            case Instruction.LDI:
+                self.instr_ldi(instr.reg_a, instr.imm)
+            case Instruction.ADI:
+                self.instr_adi(instr.reg_a, instr.imm)
+            case Instruction.JMP:
+                self.instr_jmp(instr.addr)
+            case Instruction.BRH:
+                self.instr_brh(instr.cond, instr.addr, instr.pc+1)
+            case Instruction.CAL:
+                self.instr_cal(instr.pc, instr.addr)
+            case Instruction.RET:
+                self.instr_ret()
+            case Instruction.LOD:
+                self.instr_lod(instr.pc, instr.reg_a, instr.off, instr.reg_b)
+            case Instruction.STR:
+                self.instr_str(instr.pc, instr.reg_a, instr.off, instr.reg_b)
+            case _:
+                raise Exception(f"Instruction {instr.op:01x} not yet implemented")
+
+    def init_llvm_binding(self) -> None:
+        binding.initialize()
+        binding.initialize_native_target()
+        binding.initialize_native_asmprinter()
+
+    def init_llvm_module(self) -> None:
+        self.mod = ir.Module(self.name)
+        self.mod.triple = binding.get_default_triple()
+
+    def declare_helper_funcs(self) -> None:
+        self.funcs = {
         "init_headless": ir.Function(
-            module = mod,
+            module = self.mod,
             ftype  = ir.FunctionType(ir.VoidType(), []),
             name   = "init_headless",
         ),
         "deinit_headless": ir.Function(
-            module = mod,
+            module = self.mod,
             ftype  = ir.FunctionType(ir.VoidType(), []),
             name   = "deinit_headless",
         ),
         "init": ir.Function(
-            module = mod,
+            module = self.mod,
             ftype  = ir.FunctionType(ir.VoidType(), []),
             name   = "init",
         ),
         "deinit": ir.Function(
-            module = mod,
+            module = self.mod,
             ftype  = ir.FunctionType(ir.VoidType(), []),
             name   = "deinit",
         ),
+        "raise_error": ir.Function(
+            module = self.mod,
+            ftype  = ir.FunctionType(ir.VoidType(), []),
+            name   = "raise_error",
+        ),
         "draw_pixel": ir.Function(
-            module = mod,
+            module = self.mod,
             ftype  = ir.FunctionType(ir.VoidType(), [ir.IntType(8), ir.IntType(8)]),
             name   = "draw_pixel",
         ),
         "clear_pixel": ir.Function(
-            module = mod,
+            module = self.mod,
             ftype  = ir.FunctionType(ir.VoidType(), [ir.IntType(8), ir.IntType(8)]),
             name   = "clear_pixel",
         ),
         "get_pixel": ir.Function(
-            module = mod,
+            module = self.mod,
             ftype  = ir.FunctionType(ir.IntType(8), [ir.IntType(8), ir.IntType(8)]),
             name   = "get_pixel",
         ),
         "update_screen": ir.Function(
-            module = mod,
+            module = self.mod,
             ftype  = ir.FunctionType(ir.VoidType(), []),
             name   = "update_screen",
         ),
         "clear_screen": ir.Function(
-            module = mod,
+            module = self.mod,
             ftype  = ir.FunctionType(ir.VoidType(), []),
             name   = "clear_screen",
         ),
         "push_char": ir.Function(
-            module = mod,
+            module = self.mod,
             ftype  = ir.FunctionType(ir.VoidType(), [ir.IntType(8)]),
             name   = "push_char",
         ),
         "clear_char_buffer": ir.Function(
-            module = mod,
+            module = self.mod,
             ftype  = ir.FunctionType(ir.VoidType(), []),
             name   = "clear_char_buffer",
         ),
         "flush_char_buffer": ir.Function(
-            module = mod,
+            module = self.mod,
             ftype  = ir.FunctionType(ir.VoidType(), []),
             name   = "flush_char_buffer",
         ),
         "set_num": ir.Function(
-            module = mod,
+            module = self.mod,
             ftype  = ir.FunctionType(ir.VoidType(), [ir.IntType(8)]),
             name   = "set_num",
         ),
         "set_signedness": ir.Function(
-            module = mod,
+            module = self.mod,
             ftype  = ir.FunctionType(ir.VoidType(), [ir.IntType(1)]),
             name   = "set_signedness",
         ),
         "write_num": ir.Function(
-            module = mod,
+            module = self.mod,
             ftype  = ir.FunctionType(ir.VoidType(), []),
             name   = "write_num",
         ),
         "get_controller": ir.Function(
-            module = mod,
+            module = self.mod,
             ftype  = ir.FunctionType(ir.IntType(8), []),
             name   = "get_controller",
         ),
         "get_random_num": ir.Function(
-            module = mod,
+            module = self.mod,
             ftype  = ir.FunctionType(ir.IntType(8), []),
             name   = "get_random_num",
         ),
     }
-    return mapping
 
-def generate_ir(mod:ir.Module, funcs:dict, mc:bytes, headless:bool=False) -> str:
-    """
-    Generates LLVM IR from the given machine code.
-    """
+    def load_mc_file(self) -> None:
+        with open(self.in_file, "r") as code:
+            lines = code.read().splitlines()
 
-    main_func = ir.Function(
-        module = mod,
-        ftype  = ir.FunctionType(ir.IntType(32), []),
-        name   = "main",
-    )
+        self.instructions = []
+        for pc, line in enumerate(lines):
+            self.instructions.append(Instruction(
+                pc = pc,
+                op = int(line[:4], 2),
 
-    entry = main_func.append_basic_block(name="entry")
-    builder = ir.IRBuilder(entry)
+                reg_a = int(line[4 :8 ], 2),
+                reg_b = int(line[8 :12], 2),
+                reg_c = int(line[12:16], 2),
 
-    # ram
-    ram = builder.alloca(ir.IntType(8), size=256, name="ram")
+                off  = (int(line[12:16], 2) & 0x7) + bool(int(line[12:16], 2) & 0x8) * -8,
+                imm  = int(line[8:16], 2),
+                addr = int(line[6:16], 2),
 
-    # custom stack to better emulate the CAL instruction
-    stack = builder.alloca(ir.IntType(16), size=16, name="stack")
-    sp    = builder.alloca(ir.IntType(8), name="sp")
-    builder.store(ir.Constant(ir.IntType(8), 0), sp)
+                cond = int(line[4:6], 2),
+            ))
 
-    # allocate registers on the stack
-    regs = [
-        builder.alloca(ir.IntType(8), name=f"reg_{reg}") for reg in range(16)
-    ]
+    def write_llvm_file(self) -> None:
+        with open(self.out_file, "w") as output:
+            output.write(str(self.mod))
 
-    # initialize registers to 0
-    for reg in regs:
-        builder.store(ir.Constant(ir.IntType(8), 0), reg)
+    def find_branch_targets(self) -> None:
+        self.branch_targets = []
+        self.return_targets = []
 
-    # allocate flags on the stack
-    flag_Z = builder.alloca(ir.IntType(1), name="flag_Z")
-    flag_C = builder.alloca(ir.IntType(1), name="flag_C")
+        for instr in self.instructions:
+            if instr.op == Instruction.JMP:
+                self.branch_targets.append(instr.addr)
 
-    builder.store(ir.Constant(ir.IntType(1), 0), flag_Z)
-    builder.store(ir.Constant(ir.IntType(1), 0), flag_C)
+            elif instr.op == Instruction.BRH:
+                self.branch_targets.append(instr.addr)
+                self.branch_targets.append(instr.pc + 1)
 
-    # intialize X, Y regs
-    pixel_x = builder.alloca(ir.IntType(8), name="pixel_x")
-    pixel_y = builder.alloca(ir.IntType(8), name="pixel_y")
-    builder.store(ir.Constant(ir.IntType(8), 0), pixel_x)
-    builder.store(ir.Constant(ir.IntType(8), 0), pixel_y)
+            elif instr.op == Instruction.CAL:
+                self.branch_targets.append(instr.addr)
+                self.return_targets.append(instr.pc + 1)
 
-    # create all blocks
-    blocks = []
-    for i in range(0, len(mc) // 2 + 1):
-        blocks.append(
-            builder.append_basic_block(name=f"block_{i:04x}")
+            elif instr.op == Instruction.LOD:
+                self.branch_targets.append(instr.pc + 1)
+
+            elif instr.op == Instruction.STR:
+                self.branch_targets.append(instr.pc + 1)
+
+    def init_llvm_builder(self) -> None:
+        main_func = ir.Function(
+            module = self.mod,
+            ftype  = ir.FunctionType(ir.IntType(32), []),
+            name   = "main",
         )
 
-    if headless:
-        builder.call(funcs["init_headless"], [])
-    else:
-        builder.call(funcs["init"], [])
+        self.entry = main_func.append_basic_block(name = "entry")
+        self.builder = ir.IRBuilder(self.entry)
 
-    exit_block = builder.append_basic_block(name="exit")
-    builder.position_at_start(exit_block)
-    if headless:
-        builder.call(funcs["deinit_headless"], [])
-    else:
-        builder.call(funcs["deinit"], [])
-    builder.ret(ir.Constant(ir.IntType(32), 0))
+    def build_llvm_blocks(self) -> None:
+        self.exit_block  = self.builder.append_basic_block(name = "exit_block")
+        self.error_block = self.builder.append_basic_block(name = "error_block")
 
+        self.blocks = {}
 
-    builder.position_at_end(entry)
-    builder.branch(blocks[0])
+        zero_block = self.builder.append_basic_block(name = f"block_{0:04x}")
+        self.blocks.update({0: zero_block})
 
-    for i in range(0, len(mc), 2):
-        builder.position_at_start(blocks[i // 2])
+        # sorting the blocks isn't strictly necessary, but makes the emitted llvmir make more sense
+        all_targets = sorted(list(set(self.branch_targets) | set(self.return_targets)))
+        for target in all_targets:
+            block = self.builder.append_basic_block(name = f"block_{target:04x}")
+            self.blocks.update({target: block})
 
-        full = mc[i] << 8 | mc[i + 1]
+    def terminate_all_blocks(self) -> None:
+        block_addrs = sorted(list(self.blocks.keys()))
+        for idx in range(len(block_addrs)):
+            if idx >= len(block_addrs) - 1:
+                if not self.blocks[block_addrs[idx]].is_terminated:
+                    self.builder.position_at_end(self.blocks[block_addrs[idx]])
+                    self.builder.branch(self.exit_block)
+            if not self.blocks[block_addrs[idx]].is_terminated:
+                self.builder.position_at_end(self.blocks[block_addrs[idx]])
+                self.builder.branch(self.blocks[block_addrs[idx+1]])
 
-        opcode = (full & 0xF000) >> 12
-        reg_a  = (full & 0x0F00) >> 8 
-        reg_b  = (full & 0x00F0) >> 4
-        reg_c  = (full & 0x000F)
+    def find_closest_block(self, target_addr):
+        closest_addr  = 0
+        closest_block = self.blocks[0]
+        for addr, block in sorted(self.blocks.items(), key=lambda item: item[0]):
+            if addr > target_addr:
+                break
 
-        offset = (reg_c & 0x7) + bool(reg_c & 0x8) * -8
-        if offset < 0:
-            offset = 256 + offset
+            closest_addr  = addr
+            closest_block = block
 
-        imm  = full & 0x00FF
-        addr = full & 0x03FF
+        return closest_block
 
-        cond = (full & 0x0C00) >> 10
+    def find_next_closest_block(self, target_addr):
+        closest_addr = 0
+        block_idx = 0
+        block_addrs = list(self.blocks.keys())
+        while block_idx < len(block_addrs):
+            if block_addrs[block_idx] > target_addr:
+                break
 
-        match opcode:
-            # NOP
-            case 0x0:
-                pass
-            
-            # HLT
-            # gets emulated by exiting the program
-            case 0x1:
-                builder.branch(exit_block)
+            block_idx += 1
 
-            # ADD
-            case 0x2:
-                r_a_val = builder.load(regs[reg_a])
-                sum_ = builder.add(
-                    r_a_val,
-                    builder.load(regs[reg_b])
-                )
-                
-                if reg_c != 0:
-                    builder.store(
-                        sum_,
-                        regs[reg_c]
-                    )
+        if block_idx == len(block_addrs) - 1:
+            return self.exit_block
 
-                builder.store(
-                    builder.icmp_unsigned(
-                        "==",
-                        sum_,
-                        ir.Constant(ir.IntType(8), 0)
-                    ),
-                    flag_Z
-                )
-                builder.store(
-                    builder.icmp_unsigned(
-                        "<",
-                        sum_,
-                        r_a_val,
-                    ),
-                    flag_C
-                )
+        return self.blocks[block_addrs[block_idx]]
 
-            # SUB
-            case 0x3:
-                r_a_val = builder.load(regs[reg_a])
-                res = builder.sub(
-                    r_a_val,
-                    builder.load(regs[reg_b])
-                )
+    def position_at_end_of_closest_block(self, target_addr) -> None:
+        closest_block = self.find_closest_block(target_addr)
 
-                if reg_c != 0:
-                    builder.store(
-                        res,
-                        regs[reg_c]
-                    )
+        self.builder.position_at_end(closest_block)
 
-                builder.store(
-                    builder.icmp_unsigned(
-                        "==",
-                        res,
-                        ir.Constant(ir.IntType(8), 0),
-                    ),
-                    flag_Z
-                )
-                builder.store(
-                    builder.icmp_unsigned(
-                        "<=",
-                        res,
-                        r_a_val,
-                    ),
-                    flag_C
-                )
+    def allocate_data(self) -> None:
+        self.ram   = self.builder.alloca(ir.IntType(8),  size=256, name="ram")
+        self.stack = self.builder.alloca(ir.IntType(16), size=16,  name="stack")
+        self.sp    = self.builder.alloca(ir.IntType(8),  name="sp")
+        self.builder.store(ir.Constant(ir.IntType(8), 0), self.sp)
 
-            # NOR
-            case 0x4:
-                res = builder.not_(
-                        builder.or_(
-                            builder.load(regs[reg_a]),
-                            builder.load(regs[reg_b])
-                        )
-                    )
-                
-                if reg_c != 0:
-                    builder.store(
-                        res,
-                        regs[reg_c]
-                    )
+        self.regs = []
+        for r_idx in range(16):
+            reg = self.builder.alloca(ir.IntType(8), name=f"r{r_idx}")
+            self.builder.store(
+                ir.Constant(ir.IntType(8), 0),
+                reg
+            )
+            self.regs.append(reg)
 
-                builder.store(
-                    builder.icmp_unsigned(
-                        "==",
-                        res,
-                        ir.Constant(ir.IntType(8), 0)
-                    ),
-                    flag_Z
-                )
+        self.flag_Z = self.builder.alloca(ir.IntType(1), name="flag_Z")
+        self.flag_C = self.builder.alloca(ir.IntType(1), name="flag_C")
+        self.builder.store(ir.Constant(ir.IntType(1), 0), self.flag_Z)
+        self.builder.store(ir.Constant(ir.IntType(1), 0), self.flag_C)
 
-            # AND
-            case 0x5:
-                res = builder.and_(
-                    builder.load(regs[reg_a]),
-                    builder.load(regs[reg_b]),
-                )
-                if reg_c != 0:
-                    builder.store(
-                        res,
-                        regs[reg_c]
-                    )
+        self.pixel_x = self.builder.alloca(ir.IntType(8), name="pixel_x")
+        self.pixel_y = self.builder.alloca(ir.IntType(8), name="pixel_y")
+        self.builder.store(ir.Constant(ir.IntType(8), 0), self.pixel_x)
+        self.builder.store(ir.Constant(ir.IntType(8), 0), self.pixel_y)
 
-                builder.store(
-                    builder.icmp_unsigned(
-                        "==",
-                        res,
-                        ir.Constant(ir.IntType(8), 0)
-                    ),
-                    flag_Z
-                )
+    def init_runtime(self) -> None:
+        if self.headless:
+            self.builder.call(
+                self.funcs["init_headless"],
+                [],
+            )
 
-            # XOR
-            case 0x6:
-                res = builder.xor(
-                        builder.load(regs[reg_a]),
-                        builder.load(regs[reg_b])
-                    )
-                
-                if reg_c != 0:
-                    builder.store(
-                        res,
-                        regs[reg_c]
-                    )
+        else:
+            self.builder.call(
+                self.funcs["init"],
+                [],
+            )
 
-                builder.store(
-                    builder.icmp_unsigned(
-                        "==",
-                        res,
-                        ir.Constant(ir.IntType(8), 0)
-                    ),
-                    flag_Z
-                )
+    def build_exit_routine(self) -> None:
+        if self.headless:
+            self.builder.call(
+                self.funcs["deinit_headless"],
+                [],
+            )
+        else:
+            self.builder.call(
+                self.funcs["deinit"],
+                [],
+            )
+        self.builder.ret(ir.Constant(ir.IntType(32), 0))
 
-            # RSH
-            case 0x7:
-                res = builder.lshr(
-                    builder.load(regs[reg_a]),
-                    ir.Constant(ir.IntType(8), 1),
-                )
+    def build_error_routine(self) -> None:
+        self.builder.call(
+            self.funcs["raise_error"],
+            [],
+        )
+        self.builder.ret(ir.Constant(ir.IntType(32), 1))
 
-                if reg_c != 0:
-                    builder.store(
-                        res,
-                        regs[reg_c]
-                    )
+    def instr_hlt(self) -> None:
+        if self.headless:
+            self.builder.call(
+                self.funcs["deinit_headless"],
+                [],
+            )
+        else:
+            self.builder.call(
+                self.funcs["deinit"],
+                [],
+            )
 
-                builder.store(
-                    builder.icmp_unsigned(
-                        "==",
-                        res,
-                        ir.Constant(ir.IntType(8), 0)
-                    ),
-                    flag_Z
-                )
+    def instr_add(self, ra, rb, rc) -> None:
+        ra_val = self.builder.load(self.regs[ra])
+        sum_ = self.builder.add(
+            ra_val,
+            self.builder.load(self.regs[rb])
+        )
 
-            # LDI
-            case 0x8:
-                if reg_a == 0:
-                    continue
+        if rc != 0:
+            self.builder.store(
+                sum_,
+                self.regs[rc]
+            )
 
-                builder.store(
-                    ir.Constant(ir.IntType(8), imm),
-                    regs[reg_a]
-                )
+        self.builder.store(
+            self.builder.icmp_unsigned(
+                "==",
+                sum_,
+                ir.Constant(ir.IntType(8), 0)
+            ),
+            self.flag_Z
+        )
+        self.builder.store(
+            self.builder.icmp_unsigned(
+                "<",
+                sum_,
+                ra_val,
+            ),
+            self.flag_C
+        )
 
-            # ADI
-            case 0x9:
-                r_a_val = builder.load(regs[reg_a])
+    def instr_sub(self, ra, rb, rc) -> None:
+        ra_val = self.builder.load(self.regs[ra])
+        diff = self.builder.sub(
+            ra_val,
+            self.builder.load(self.regs[rb])
+        )
 
-                res = builder.add(
-                    r_a_val,
-                    ir.Constant(ir.IntType(8), imm)
-                )
-                if reg_a != 0:
-                    builder.store(
-                        res,
-                        regs[reg_a]
-                    )
-                builder.store(
-                    builder.icmp_unsigned(
-                        "==",
-                        res,
-                        ir.Constant(ir.IntType(8), 0)
-                    ),
-                    flag_Z
-                )
-                builder.store(
-                    builder.icmp_unsigned(
-                        "<",
-                        res,
-                        r_a_val,
-                    ),
-                    flag_C
-                )
-            
-            # JMP
-            case 0xA:
-                builder.branch(
-                    blocks[addr]
-                )
+        if rc != 0:
+            self.builder.store(
+                diff,
+                self.regs[rc],
+            )
 
-            # BRH
-            case 0xB:
-                val = None
-                if cond == 0:
-                    val = builder.icmp_unsigned(
-                        "==",
-                        builder.load(flag_Z),
-                        ir.Constant(ir.IntType(1), 1)
-                    )
-                elif cond == 1:
-                    val = builder.icmp_unsigned(
-                        "!=",
-                        builder.load(flag_Z),
-                        ir.Constant(ir.IntType(1), 1)
-                    )
-                elif cond == 2:
-                    val = builder.icmp_unsigned(
-                        "==",
-                        builder.load(flag_C),
-                        ir.Constant(ir.IntType(1), 1)
-                    )
-                elif cond == 3:
-                    val = builder.icmp_unsigned(
-                        "!=",
-                        builder.load(flag_C),
-                        ir.Constant(ir.IntType(1), 1)
-                    )
+        self.builder.store(
+            self.builder.icmp_unsigned(
+                "==",
+                diff,
+                ir.Constant(ir.IntType(8), 0)
+            ),
+            self.flag_Z,
+        )
+        self.builder.store(
+            self.builder.icmp_unsigned(
+                "<=",
+                diff,
+                ra_val,
+            ),
+            self.flag_C
+        )
 
-                builder.cbranch(
+    def instr_nor(self, ra, rb, rc) -> None:
+        res = self.builder.not_(
+            self.builder.or_(
+                self.builder.load(self.regs[ra]),
+                self.builder.load(self.regs[rb]),
+            )
+        )
+
+        if rc != 0:
+            self.builder.store(
+                res,
+                self.regs[rc]
+            )
+
+        self.builder.store(
+            self.builder.icmp_unsigned(
+                "==",
+                res,
+                ir.Constant(ir.IntType(8), 0),
+            ),
+            self.flag_Z
+        )
+
+    def instr_and(self, ra, rb, rc) -> None:
+        res = self.builder.and_(
+            self.builder.load(self.regs[ra]),
+            self.builder.load(self.regs[rb]),
+        )
+
+        if rc != 0:
+            self.builder.store(
+                res,
+                self.regs[rc],
+            )
+
+        self.builder.store(
+            self.builder.icmp_unsigned(
+                "==",
+                res,
+                ir.Constant(ir.IntType(8), 0),
+            ),
+            self.flag_Z
+        )
+
+    def instr_xor(self, ra, rb, rc) -> None:
+        res = self.builder.xor(
+            self.builder.load(self.regs[ra]),
+            self.builder.load(self.regs[rb]),
+        )
+
+        if rc != 0:
+            self.builder.store(
+                res,
+                self.regs[rc],
+            )
+
+        self.builder.store(
+            self.builder.icmp_unsigned(
+                "==",
+                res,
+                ir.Constant(ir.IntType(8), 0),
+            ),
+            self.flag_Z
+        )
+
+    def instr_rsh(self, ra, rc) -> None:
+        res = self.builder.lshr(
+            self.builder.load(self.regs[ra]),
+            ir.Constant(ir.IntType(8), 1),
+        )
+
+        if rc != 0:
+            self.builder.store(
+                res,
+                self.regs[rc],
+            )
+
+    def instr_ldi(self, reg, imm) -> None:
+        if reg == 0:
+            return
+
+        self.builder.store(
+            ir.Constant(ir.IntType(8), imm),
+            self.regs[reg],
+        )
+
+    def instr_adi(self, reg, imm) -> None:
+        reg_val = self.builder.load(self.regs[reg])
+        res = self.builder.add(
+            reg_val,
+            ir.Constant(ir.IntType(8), imm),
+        )
+
+        if reg != 0:
+            self.builder.store(
+                res,
+                self.regs[reg],
+            )
+
+        self.builder.store(
+            self.builder.icmp_unsigned(
+                "==",
+                res,
+                ir.Constant(ir.IntType(8), 0),
+            ),
+            self.flag_Z
+        )
+
+        self.builder.store(
+            self.builder.icmp_unsigned(
+                "<",
+                res,
+                reg_val,
+            ),
+            self.flag_C
+        )
+
+    def instr_jmp(self, addr) -> None:
+        self.builder.branch(
+            self.blocks[addr]
+        )
+
+    def instr_brh(self, cond, true_addr, false_addr) -> None:
+        val = None
+        if cond == 0:
+            val = self.builder.icmp_unsigned(
+                "==",
+                self.builder.load(self.flag_Z),
+                ir.Constant(ir.IntType(1), 1)
+            )
+        elif cond == 1:
+            val = self.builder.icmp_unsigned(
+                "!=",
+                self.builder.load(self.flag_Z),
+                ir.Constant(ir.IntType(1), 1)
+            )
+        elif cond == 2:
+            val = self.builder.icmp_unsigned(
+                "==",
+                self.builder.load(self.flag_C),
+                ir.Constant(ir.IntType(1), 1)
+            )
+        elif cond == 3:
+            val = self.builder.icmp_unsigned(
+                "!=",
+                self.builder.load(self.flag_C),
+                ir.Constant(ir.IntType(1), 1)
+            )
+
+        self.builder.cbranch(
+            val,
+            self.blocks[true_addr],
+            self.blocks[false_addr],
+        )
+
+    def instr_cal(self, pc, addr) -> None:
+        sp0 = self.builder.load(self.sp)
+        elem_ptr = self.builder.gep(
+            self.stack,
+            [sp0],
+        )
+        self.builder.store(
+            ir.Constant(ir.IntType(16), pc+1),
+            elem_ptr,
+        )
+        self.builder.store(
+            self.builder.add(
+                sp0,
+                ir.Constant(ir.IntType(8), 1),
+            ),
+            self.sp,
+        )
+        self.builder.branch(
+            self.blocks[addr]
+        )
+
+    def instr_ret(self) -> None:
+        new_sp = self.builder.sub(
+            self.builder.load(self.sp),
+            ir.Constant(ir.IntType(8), 1),
+        )
+        self.builder.store(
+            new_sp,
+            self.sp
+        )
+        elem_ptr = self.builder.gep(
+            self.stack,
+            [new_sp],
+        )
+        ret_addr = self.builder.load(elem_ptr)
+
+        switch = self.builder.switch(
+            ret_addr,
+            self.error_block, # the return address should always be in self.return_targets
+        )
+
+        for ret_target in self.return_targets:
+            switch.add_case(ir.Constant(ir.IntType(16), ret_target), self.blocks[ret_target])
+
+    def instr_lod(self, pc, ra, off, rb) -> None:
+        calc_addr = self.builder.add(
+            self.builder.load(self.regs[ra]),
+            ir.Constant(ir.IntType(8), off),
+        )
+
+        unmapped_ram_case = self.builder.append_basic_block()
+
+        self.builder.position_after(calc_addr)
+        switch = self.builder.switch(
+            calc_addr,
+            unmapped_ram_case,
+        )
+
+        self.builder.position_at_start(unmapped_ram_case)
+        elem_ptr = self.builder.gep(
+            self.ram,
+            [calc_addr],
+        )
+        if rb != 0:
+            self.builder.store(
+                self.builder.load(elem_ptr),
+                self.regs[rb],
+            )
+        self.builder.branch(self.find_next_closest_block(pc))
+
+        get_pixel_case = self.builder.append_basic_block()
+        self.builder.position_at_start(get_pixel_case)
+        if self.headless:
+            self.builder.store(
+                ir.Constant(ir.IntType(8), 0),
+                self.regs[rb],
+            )
+        else:
+            val = self.builder.call(
+                self.funcs["get_pixel"],
+                [
+                    self.builder.load(self.pixel_x),
+                    self.builder.load(self.pixel_y),
+                ],
+            )
+            if rb != 0:
+                self.builder.store(
                     val,
-                    blocks[addr],
-                    blocks[i // 2 + 1],
+                    self.regs[rb],
                 )
+        self.builder.branch(self.find_next_closest_block(pc))
+        switch.add_case(ir.Constant(ir.IntType(8), 244), get_pixel_case)
 
-            # CAL
-            case 0xC:
-                sp0 = builder.load(sp)
-                elem_ptr = builder.gep(
-                    stack,
-                    [sp0],
-                    name="sp0"
-                )
-                builder.store(
-                    ir.Constant(ir.IntType(16), i // 2 + 1),
-                    elem_ptr,
-                )
-                builder.store(
-                    builder.add(sp0, ir.Constant(ir.IntType(8), 1)),
-                    sp
-                )
+        get_random_num_case = self.builder.append_basic_block()
+        self.builder.position_at_start(get_random_num_case)
+        val = self.builder.call(
+            self.funcs["get_random_num"],
+            [],
+        )
+        if rb != 0:
+            self.builder.store(
+                val,
+                self.regs[rb],
+            )
+        self.builder.branch(self.find_next_closest_block(pc))
+        switch.add_case(ir.Constant(ir.IntType(8), 254), get_random_num_case)
 
-                builder.branch(
-                    blocks[addr]
-                )
-
-            # RET
-            case 0xD:
-                new_sp = builder.sub(
-                    builder.load(sp),
-                    ir.Constant(ir.IntType(8), 1)
-                )
-                builder.store(
-                    new_sp,
-                    sp
-                )
-                elem_ptr = builder.gep(
-                    stack,
-                    [new_sp],
-                )
-                ret_addr = builder.load(elem_ptr)
-
-                switch = builder.switch(
-                    ret_addr,
-                    blocks[i // 2 + 1],
-                )
-
-                for j in range(0, len(mc) // 2):
-                    switch.add_case(ir.Constant(ir.IntType(16), j), blocks[j])
-
-            # LOD
-            case 0xE:
-                calc_addr = builder.add(
-                    builder.load(regs[reg_a]),
-                    ir.Constant(ir.IntType(8), offset)
-                )
-                is_in_mapped_ram = builder.icmp_unsigned(
-                    "<",
-                    calc_addr,
-                    ir.Constant(ir.IntType(8), 240)
-                )
-
-                true_blk = builder.append_basic_block()
-                false_blk = builder.append_basic_block()
-
-                builder.position_at_start(true_blk)
-                elem_ptr = builder.gep(
-                    ram,
-                    [calc_addr],
-                )
-                builder.store(
-                    builder.load(elem_ptr),
-                    regs[reg_b],
-                )
-
-                builder.branch(blocks[i // 2 + 1])
-
-                builder.position_at_start(false_blk)
-                switch = builder.switch(
-                    calc_addr,
-                    blocks[i // 2 + 1],
-                )
-
-                case_244 = builder.append_basic_block()
-                switch.add_case(
-                    ir.Constant(ir.IntType(8), 244),
-                    case_244,
-                )
-                case_254 = builder.append_basic_block()
-                switch.add_case(
-                    ir.Constant(ir.IntType(8), 254),
-                    case_254,
-                )
-                case_255 = builder.append_basic_block()
-                switch.add_case(
-                    ir.Constant(ir.IntType(8), 255),
-                    case_255,
-                )
-
-                builder.position_at_start(case_244)
-                if headless:
-                    builder.store(
-                        ir.Constant(ir.IntType(8), 0),
-                        regs[reg_b],
-                    )
-                else:
-                    val = builder.call(
-                        funcs["get_pixel"],
-                        [
-                            builder.load(pixel_x),
-                            builder.load(pixel_y),
-                        ]
-                    )
-                    builder.store(
-                        val,
-                        regs[reg_b],
-                    )
-                builder.branch(blocks[i // 2 + 1])
-
-                builder.position_at_start(case_254)
-                val = builder.call(
-                    funcs["get_random_num"],
-                    []
-                )
-                builder.store(
+        get_controller_case = self.builder.append_basic_block()
+        self.builder.position_at_start(get_controller_case)
+        if self.headless:
+            self.builder.store(
+                ir.Constant(ir.IntType(8), 0),
+                self.regs[rb],
+            )
+        else:
+            val = self.builder.call(
+                self.funcs["get_controller"],
+                [],
+            )
+            if rb != 0:
+                self.builder.store(
                     val,
-                    regs[reg_b],
+                    self.regs[rb],
                 )
-                builder.branch(blocks[i // 2 + 1])
+        self.builder.branch(self.find_next_closest_block(pc))
+        switch.add_case(ir.Constant(ir.IntType(8), 255), get_controller_case)
 
-                builder.position_at_start(case_255)
-                if headless:
-                    builder.store(
-                        ir.Constant(ir.IntType(8), 0),
-                        regs[reg_b],
-                    )
-                else:
-                    val = builder.call(
-                        funcs["get_controller"],
-                        []
-                    )
-                    builder.store(
-                        val,
-                        regs[reg_b],
-                    )
-                builder.branch(blocks[i // 2 + 1])
+    def instr_str(self, pc, ra, off, rb) -> None:
+        calc_addr = self.builder.add(
+            self.builder.load(self.regs[ra]),
+            ir.Constant(ir.IntType(8), off),
+        )
 
-                builder.position_at_end(blocks[i // 2])
-                builder.cbranch(
-                    is_in_mapped_ram,
-                    true_blk,
-                    false_blk,
-                )
+        unmapped_ram_case = self.builder.append_basic_block()
 
-            # STR
-            case 0xF:
-                calc_addr = builder.add(
-                    builder.load(regs[reg_a]),
-                    ir.Constant(ir.IntType(8), offset)
-                )
-                is_in_mapped_ram = builder.icmp_unsigned(
-                    "<",
-                    calc_addr,
-                    ir.Constant(ir.IntType(8), 240)
-                )
-                true_blk = builder.append_basic_block()
-                false_blk = builder.append_basic_block()
+        self.builder.position_after(calc_addr)
+        switch = self.builder.switch(
+            calc_addr,
+            unmapped_ram_case,
+        )
 
-                builder.position_at_start(true_blk)
-                elem_ptr = builder.gep(
-                    ram,
-                    [calc_addr],
-                )
-                builder.store(
-                    builder.load(regs[reg_b]),
-                    elem_ptr,
-                )
-                builder.branch(blocks[i // 2 + 1])
+        self.builder.position_at_start(unmapped_ram_case)
+        is_in_invalid_ram = self.builder.icmp_unsigned(
+            ">=",
+            calc_addr,
+            ir.Constant(ir.IntType(8), 240),
+        )
+        valid_ram_block = self.builder.append_basic_block()
+        self.builder.cbranch(
+            is_in_invalid_ram,
+            self.error_block,
+            valid_ram_block,
+        )
+        self.builder.position_at_start(valid_ram_block)
+        elem_ptr = self.builder.gep(
+            self.ram,
+            [calc_addr],
+        )
+        self.builder.store(
+            self.builder.load(self.regs[rb]),
+            elem_ptr,
+        )
+        self.builder.branch(self.find_next_closest_block(pc))
 
-                builder.position_at_start(false_blk)
-                switch = builder.switch(
-                    calc_addr,
-                    blocks[i // 2 + 1],
-                )
+        store_pixel_x_case = self.builder.append_basic_block()
+        self.builder.position_at_start(store_pixel_x_case)
+        self.builder.store(
+            self.builder.load(self.regs[rb]),
+            self.pixel_x,
+        )
+        self.builder.branch(self.find_next_closest_block(pc))
+        switch.add_case(ir.Constant(ir.IntType(8), 240), store_pixel_x_case)
 
-                case_240 = builder.append_basic_block()
-                switch.add_case(
-                    ir.Constant(ir.IntType(8), 240),
-                    case_240,
-                )
-                case_241 = builder.append_basic_block()
-                switch.add_case(
-                    ir.Constant(ir.IntType(8), 241),
-                    case_241,
-                )
-                case_242 = builder.append_basic_block()
-                switch.add_case(
-                    ir.Constant(ir.IntType(8), 242),
-                    case_242,
-                )
-                case_243 = builder.append_basic_block()
-                switch.add_case(
-                    ir.Constant(ir.IntType(8), 243),
-                    case_243,
-                )
-                case_245 = builder.append_basic_block()
-                switch.add_case(
-                    ir.Constant(ir.IntType(8), 245),
-                    case_245,
-                )
-                case_246 = builder.append_basic_block()
-                switch.add_case(
-                    ir.Constant(ir.IntType(8), 246),
-                    case_246,
-                )
-                case_247 = builder.append_basic_block()
-                switch.add_case(
-                    ir.Constant(ir.IntType(8), 247),
-                    case_247,
-                )
-                case_248 = builder.append_basic_block()
-                switch.add_case(
-                    ir.Constant(ir.IntType(8), 248),
-                    case_248,
-                )
-                case_249 = builder.append_basic_block()
-                switch.add_case(
-                    ir.Constant(ir.IntType(8), 249),
-                    case_249,
-                )
-                case_250 = builder.append_basic_block()
-                switch.add_case(
-                    ir.Constant(ir.IntType(8), 250),
-                    case_250,
-                )
-                case_251 = builder.append_basic_block()
-                switch.add_case(
-                    ir.Constant(ir.IntType(8), 251),
-                    case_251,
-                )
-                case_252 = builder.append_basic_block()
-                switch.add_case(
-                    ir.Constant(ir.IntType(8), 252),
-                    case_252,
-                )
-                case_253 = builder.append_basic_block()
-                switch.add_case(
-                    ir.Constant(ir.IntType(8), 253),
-                    case_253,
-                )
+        store_pixel_y_case = self.builder.append_basic_block()
+        self.builder.position_at_start(store_pixel_y_case)
+        self.builder.store(
+            self.builder.load(self.regs[rb]),
+            self.pixel_y,
+        )
+        self.builder.branch(self.find_next_closest_block(pc))
+        switch.add_case(ir.Constant(ir.IntType(8), 241), store_pixel_y_case)
 
-                builder.position_at_start(case_240)
-                builder.store(
-                    builder.load(regs[reg_b]),
-                    pixel_x,
-                )
-                builder.branch(blocks[i // 2 + 1])
-                builder.position_at_start(case_241)
-                builder.store(
-                    builder.load(regs[reg_b]),
-                    pixel_y,
-                )
-                builder.branch(blocks[i // 2 + 1])
-                builder.position_at_start(case_242)
-                if not headless:
-                    builder.call(
-                        funcs["draw_pixel"],
-                        [
-                            builder.load(pixel_x),
-                            builder.load(pixel_y),
-                        ]
-                    )
-                builder.branch(blocks[i // 2 + 1])
-                builder.position_at_start(case_243)
-                if not headless:
-                    builder.call(
-                        funcs["clear_pixel"],
-                        [
-                            builder.load(pixel_x),
-                            builder.load(pixel_y),
-                        ]
-                    )
-                builder.branch(blocks[i // 2 + 1])
-                builder.position_at_start(case_245)
-                if not headless:
-                    builder.call(
-                        funcs["update_screen"],
-                        []
-                    )
-                builder.branch(blocks[i // 2 + 1])
-                builder.position_at_start(case_246)
-                if not headless:
-                    builder.call(
-                        funcs["clear_screen"],
-                        []
-                    )
-                builder.branch(blocks[i // 2 + 1])
-                builder.position_at_start(case_247)
-                builder.call(
-                    funcs["push_char"],
-                    [builder.load(regs[reg_b])]
-                )
-                builder.branch(blocks[i // 2 + 1])
-                builder.position_at_start(case_248)
-                builder.call(
-                    funcs["flush_char_buffer"],
-                    []
-                )
-                builder.branch(blocks[i // 2 + 1])
-                builder.position_at_start(case_249)
-                builder.call(
-                    funcs["clear_char_buffer"],
-                    []
-                )
-                builder.branch(blocks[i // 2 + 1])
-                builder.position_at_start(case_250)
-                builder.call(
-                    funcs["set_num"],
-                    [builder.load(regs[reg_b])]
-                )
-                builder.branch(blocks[i // 2 + 1])
-                builder.position_at_start(case_251)
-                builder.call(
-                    funcs["set_num"],
-                    [ir.Constant(ir.IntType(8), 0)]
-                )
-                builder.branch(blocks[i // 2 + 1])
-                builder.position_at_start(case_252)
-                builder.call(
-                    funcs["set_signedness"],
-                    [ir.Constant(ir.IntType(1), 0)]
-                )
-                builder.branch(blocks[i // 2 + 1])
-                builder.position_at_start(case_253)
-                builder.call(
-                    funcs["set_signedness"],
-                    [ir.Constant(ir.IntType(1), 1)]
-                )
-                builder.branch(blocks[i // 2 + 1])
+        draw_pixel_case = self.builder.append_basic_block()
+        self.builder.position_at_start(draw_pixel_case)
+        if not self.headless:
+            self.builder.call(
+                self.funcs["draw_pixel"],
+                [
+                    self.builder.load(self.pixel_x),
+                    self.builder.load(self.pixel_y),
+                ],
+            )
+        self.builder.branch(self.find_next_closest_block(pc))
+        switch.add_case(ir.Constant(ir.IntType(8), 242), draw_pixel_case)
 
-                builder.position_at_end(blocks[i // 2])
-                builder.cbranch(
-                    is_in_mapped_ram,
-                    true_blk,
-                    false_blk,
-                )
+        clear_pixel_case = self.builder.append_basic_block()
+        self.builder.position_at_start(clear_pixel_case)
+        if not self.headless:
+            self.builder.call(
+                self.funcs["clear_pixel"],
+                [
+                    self.builder.load(self.pixel_x),
+                    self.builder.load(self.pixel_y),
+                ],
+            )
+        self.builder.branch(self.find_next_closest_block(pc))
+        switch.add_case(ir.Constant(ir.IntType(8), 243), clear_pixel_case)
 
-    for idx in range(len(blocks)):
-        if idx >= len(blocks) - 1:
-            builder.position_at_end(blocks[idx])
-            builder.branch(exit_block)
-        if not blocks[idx].is_terminated:
-            builder.position_at_end(blocks[idx])
-            builder.branch(blocks[idx + 1])
+        update_screen_case = self.builder.append_basic_block()
+        self.builder.position_at_start(update_screen_case)
+        if not self.headless:
+            self.builder.call(
+                self.funcs["update_screen"],
+                [],
+            )
+        self.builder.branch(self.find_next_closest_block(pc))
+        switch.add_case(ir.Constant(ir.IntType(8), 245), update_screen_case)
 
-    return str(mod)
+        clear_screen_case = self.builder.append_basic_block()
+        self.builder.position_at_start(clear_screen_case)
+        if not self.headless:
+            self.builder.call(
+                self.funcs["clear_screen"],
+                [],
+            )
+        self.builder.branch(self.find_next_closest_block(pc))
+        switch.add_case(ir.Constant(ir.IntType(8), 246), clear_screen_case)
 
-def recomp(in_file:str, out_file:str, headless:bool = False) -> None:
-    """
-    Compiles 'in_file' to LLVM IR and writes it to 'out_file'.
-    """
-    
-    init()
-    mod = make_module(os.path.basename(in_file))
-    funcs = declare_external_functions(mod)
+        push_char_case = self.builder.append_basic_block()
+        self.builder.position_at_start(push_char_case)
+        self.builder.call(
+            self.funcs["push_char"],
+            [self.builder.load(self.regs[rb])],
+        )
+        self.builder.branch(self.find_next_closest_block(pc))
+        switch.add_case(ir.Constant(ir.IntType(8), 247), push_char_case)
 
-    mc = load_mc_file(in_file)
+        flush_char_buffer_case = self.builder.append_basic_block()
+        self.builder.position_at_start(flush_char_buffer_case)
+        self.builder.call(
+            self.funcs["flush_char_buffer"],
+            [],
+        )
+        self.builder.branch(self.find_next_closest_block(pc))
+        switch.add_case(ir.Constant(ir.IntType(8), 248), flush_char_buffer_case)
 
-    llvm = generate_ir(mod, funcs, mc, headless=headless)
-    
-    with open(out_file, "w") as file:
-        file.write(llvm)
+        clear_char_buffer_case = self.builder.append_basic_block()
+        self.builder.position_at_start(clear_char_buffer_case)
+        self.builder.call(
+            self.funcs["clear_char_buffer"],
+            [],
+        )
+        self.builder.branch(self.find_next_closest_block(pc))
+        switch.add_case(ir.Constant(ir.IntType(8), 249), clear_char_buffer_case)
+
+        set_num_to_val_case = self.builder.append_basic_block()
+        self.builder.position_at_start(set_num_to_val_case)
+        self.builder.call(
+            self.funcs["set_num"],
+            [self.builder.load(self.regs[rb])],
+        )
+        self.builder.branch(self.find_next_closest_block(pc))
+        switch.add_case(ir.Constant(ir.IntType(8), 250), set_num_to_val_case)
+
+        set_num_to_zero_case = self.builder.append_basic_block()
+        self.builder.position_at_start(set_num_to_zero_case)
+        self.builder.call(
+            self.funcs["set_num"],
+            [ir.Constant(ir.IntType(8), 0)],
+        )
+        self.builder.branch(self.find_next_closest_block(pc))
+        switch.add_case(ir.Constant(ir.IntType(8), 251), set_num_to_zero_case)
+
+        unset_signedness_case = self.builder.append_basic_block()
+        self.builder.position_at_start(unset_signedness_case)
+        self.builder.call(
+            self.funcs["set_signedness"],
+            [ir.Constant(ir.IntType(1), 0)],
+        )
+        self.builder.branch(self.find_next_closest_block(pc))
+        switch.add_case(ir.Constant(ir.IntType(8), 252), unset_signedness_case)
+
+        set_signedness_case = self.builder.append_basic_block()
+        self.builder.position_at_start(set_signedness_case)
+        self.builder.call(
+            self.funcs["set_signedness"],
+            [ir.Constant(ir.IntType(1), 1)],
+        )
+        self.builder.branch(self.find_next_closest_block(pc))
+        switch.add_case(ir.Constant(ir.IntType(8), 253), set_signedness_case)
 
 if __name__ == "__main__":
     import argparse
@@ -836,4 +915,10 @@ if __name__ == "__main__":
     parser.add_argument("--headless", action="store_true", help="Run in headless mode without initializing the graphics library.")
     args = parser.parse_args()
     
-    recomp(args.in_file, args.out_file, headless=args.headless)
+    recompiler = Recompiler(
+        args.in_file,
+        args.out_file,
+        args.headless,
+    )
+
+    recompiler.recompile()
